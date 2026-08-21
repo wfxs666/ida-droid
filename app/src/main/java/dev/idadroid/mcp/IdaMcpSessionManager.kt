@@ -5,6 +5,7 @@ import android.system.Os
 import dev.idadroid.env.EnvironmentPaths
 import dev.idadroid.proot.IdaProotRuntime
 import java.io.File
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.time.Instant
@@ -17,7 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 
-class IdaMcpSessionManager(
+class IdaMcpSessionManager private constructor(
     context: Context,
     private val paths: EnvironmentPaths = EnvironmentPaths.of(context)
 ) {
@@ -59,9 +60,16 @@ class IdaMcpSessionManager(
                     materializeLogDir()
 
                     if (isTcpOpen(launchSettings.port)) {
-                        val running = runningState(launchSettings, "IDA MCP HTTP 已在端口 ${launchSettings.port} 运行")
-                        _state.value = running
-                        return@runCatching running
+                        // Port is open. If it is our own live process, we are
+                        // already running; otherwise a stale process from a
+                        // previous session holds the port, so clean it up and
+                        // start fresh instead of reporting a phantom "running".
+                        if (activeProcess?.isAlive == true) {
+                            val running = runningState(launchSettings, "IDA MCP HTTP 已在端口 ${launchSettings.port} 运行")
+                            _state.value = running
+                            return@runCatching running
+                        }
+                        runCatching { runtime.run(buildStopCommand(launchSettings), timeoutMs = 15_000) }
                     }
 
                     _state.value = IdaMcpSessionState(
@@ -83,6 +91,11 @@ class IdaMcpSessionManager(
 
                     val ready = waitUntilTcpOpen(launchSettings.port, timeoutMs = 30_000)
                     if (!ready) {
+                        // Tear down the half-started process so it cannot keep
+                        // holding the port or linger as a zombie.
+                        runCatching { process.destroy() }
+                        if (!process.waitFor(2, TimeUnit.SECONDS)) runCatching { process.destroyForcibly() }
+                        activeProcess = null
                         val logTail = readLogTail(60).ifBlank { "暂无 ida-mcp-http.log" }
                         val errorState = IdaMcpSessionState(
                             status = IdaMcpStatus.Error,
@@ -234,13 +247,21 @@ class IdaMcpSessionManager(
         file.parentFile?.mkdirs()
         file.appendText("\n== ${Instant.now()} IDA MCP supervisor started pid=${process.safePid() ?: "unknown"} ==\n")
         Thread {
-            process.inputStream.bufferedReader().useLines { lines ->
-                lines.forEach { file.appendText("[stdout] $it\n") }
+            try {
+                process.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { file.appendText("[stdout] $it\n") }
+                }
+            } catch (_: IOException) {
+                // Stream closed by process teardown (stop/destroy); reading is done.
             }
         }.apply { name = "idadroid-mcp-stdout"; isDaemon = true; start() }
         Thread {
-            process.errorStream.bufferedReader().useLines { lines ->
-                lines.forEach { file.appendText("[stderr] $it\n") }
+            try {
+                process.errorStream.bufferedReader().useLines { lines ->
+                    lines.forEach { file.appendText("[stderr] $it\n") }
+                }
+            } catch (_: IOException) {
+                // Stream closed by process teardown (stop/destroy); reading is done.
             }
         }.apply { name = "idadroid-mcp-stderr"; isDaemon = true; start() }
     }
@@ -259,6 +280,22 @@ class IdaMcpSessionManager(
 
         @Volatile
         private var activeProcess: Process? = null
+
+        @Volatile
+        private var instance: IdaMcpSessionManager? = null
+
+        /**
+         * Process-wide singleton. Home UI and the floating window must share
+         * one manager (state, settings and the launched process), otherwise
+         * each surface starts its own MCP with its own settings and neither
+         * reflects the other's real state.
+         */
+        fun get(context: Context): IdaMcpSessionManager {
+            instance?.let { return it }
+            return synchronized(this) {
+                instance ?: IdaMcpSessionManager(context.applicationContext).also { instance = it }
+            }
+        }
     }
 }
 

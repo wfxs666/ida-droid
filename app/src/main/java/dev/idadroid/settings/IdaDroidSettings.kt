@@ -18,8 +18,12 @@ class IdaDroidSettings(context: Context) {
     private val _vncSettings = MutableStateFlow(readVncSettings())
     val vncSettings: StateFlow<VncSettings> = _vncSettings.asStateFlow()
 
+    private val _floatingWindowEnabled = MutableStateFlow(prefs.getBoolean(KEY_FLOATING_WINDOW, false))
+    val floatingWindowEnabled: StateFlow<Boolean> = _floatingWindowEnabled.asStateFlow()
+
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key in VNC_KEYS) _vncSettings.value = readVncSettings()
+        if (key == KEY_FLOATING_WINDOW) _floatingWindowEnabled.value = prefs.getBoolean(KEY_FLOATING_WINDOW, false)
     }
 
     init {
@@ -48,6 +52,11 @@ class IdaDroidSettings(context: Context) {
 
     fun updateStopGuiOnAppExit(enabled: Boolean) {
         prefs.edit { putBoolean(KEY_STOP_GUI_ON_APP_EXIT, enabled) }
+    }
+
+    fun setFloatingWindowEnabled(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_FLOATING_WINDOW, enabled) }
+        _floatingWindowEnabled.value = enabled
     }
 
     fun resetVncDefaults() {
@@ -90,6 +99,7 @@ class IdaDroidSettings(context: Context) {
         private const val KEY_VNC_DEPTH = "vnc_depth"
         private const val KEY_VNC_DISPLAY = "vnc_display"
         private const val KEY_STOP_GUI_ON_APP_EXIT = "stop_gui_on_app_exit"
+        private const val KEY_FLOATING_WINDOW = "floating_window_enabled"
 
         const val DEFAULT_VNC_PORT = 5901
         const val DEFAULT_VNC_PASSWORD = "Zbt7nba5"

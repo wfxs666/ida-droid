@@ -4,7 +4,10 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -47,6 +50,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import dev.idadroid.service.FloatingWindowService
 import dev.idadroid.settings.IdaDroidSettings
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -59,6 +63,15 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val vnc by settingsStore.vncSettings.collectAsState()
+    val overlayEnabled by settingsStore.floatingWindowEnabled.collectAsState()
+
+    val overlayPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (Settings.canDrawOverlays(context)) {
+            FloatingWindowService.start(context)
+        } else {
+            Toast.makeText(context, "未授予悬浮窗权限，无法开启悬浮窗", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     var editPort by remember { mutableStateOf(false) }
     var editPassword by remember { mutableStateOf(false) }
@@ -151,6 +164,42 @@ fun SettingsScreen(
                     subtitle = "端口 5901，密码 Zbt7nba5，1280x800，depth 24",
                     icon = Icons.Default.Refresh,
                     onClick = { confirmReset = true }
+                )
+            }
+
+            item { HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp)) }
+            item { SettingsSectionHeader("悬浮窗") }
+            item {
+                SettingsToggleItem(
+                    title = "启用悬浮窗",
+                    subtitle = if (Settings.canDrawOverlays(context)) {
+                        "在其它应用上方显示悬浮快捷球：环境 / IDA / Agent 状态 + 快捷操作。"
+                    } else {
+                        "需要授予“显示在其他应用上层”权限。"
+                    },
+                    checked = overlayEnabled,
+                    onCheckedChange = { enabled ->
+                        if (enabled) {
+                            if (Settings.canDrawOverlays(context)) {
+                                FloatingWindowService.start(context)
+                            } else {
+                                val intent = Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}")
+                                )
+                                runCatching { overlayPermissionLauncher.launch(intent) }
+                                    .onFailure {
+                                        runCatching {
+                                            overlayPermissionLauncher.launch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+                                        }.onFailure {
+                                            Toast.makeText(context, "请到系统设置中手动授予悬浮窗权限", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                            }
+                        } else {
+                            FloatingWindowService.stop(context)
+                        }
+                    }
                 )
             }
 

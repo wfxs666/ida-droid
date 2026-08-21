@@ -7,3 +7,8 @@ dist/
 local.properties
 .idea/
 .DS_Store
+
+# signing keys
+keystore/
+# build logs
+*.log

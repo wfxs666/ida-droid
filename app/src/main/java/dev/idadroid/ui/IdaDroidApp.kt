@@ -152,7 +152,7 @@ import kotlinx.coroutines.withContext
 private enum class IdaDroidScreen { Home, Settings, Agent, About }
 
 @Composable
-fun IdaDroidApp() {
+fun IdaDroidApp(initialAgent: Boolean = false) {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             val context = LocalContext.current
@@ -161,14 +161,14 @@ fun IdaDroidApp() {
             val vncManager = remember { VncSessionManager(context.applicationContext, settingsStore) }
             val agentManager = remember { PiAgentManager(context.applicationContext) }
             val fileManager = remember { ContainerFileManager(context.applicationContext) }
-            val mcpManager = remember { IdaMcpSessionManager(context.applicationContext) }
+            val mcpManager = remember { IdaMcpSessionManager.get(context.applicationContext) }
             val envState by manager.state.collectAsState()
             val guiState by vncManager.state.collectAsState()
             val agentState by agentManager.state.collectAsState()
             val mcpState by mcpManager.state.collectAsState()
             val vncSettings by settingsStore.vncSettings.collectAsState()
             val scope = rememberCoroutineScope()
-            var currentScreen by remember { mutableStateOf(IdaDroidScreen.Home) }
+            var currentScreen by remember { mutableStateOf(if (initialAgent) IdaDroidScreen.Agent else IdaDroidScreen.Home) }
             var importProgress by remember { mutableStateOf<ImportProgress?>(null) }
             var validationBusy by remember { mutableStateOf(false) }
             var transientMessage by remember { mutableStateOf<String?>(null) }
