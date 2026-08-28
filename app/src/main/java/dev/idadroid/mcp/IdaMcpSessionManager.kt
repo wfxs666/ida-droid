@@ -71,6 +71,21 @@ class IdaMcpSessionManager private constructor(
                             return@runCatching running
                         }
                         runCatching { runtime.run(buildStopCommand(launchSettings), timeoutMs = 15_000) }
+                        if (!waitUntilPortClosed(launchSettings.port, timeoutMs = 10_000)) {
+                            // The port is still held by something we cannot stop
+                            // (e.g. a non-MCP process). Starting a replacement
+                            // would bind-fail while waitUntilTcpOpen would
+                            // falsely report success against the foreign port.
+                            val errorState = IdaMcpSessionState(
+                                status = IdaMcpStatus.Error,
+                                settings = launchSettings,
+                                endpoint = launchSettings.endpoint,
+                                message = "IDA MCP 端口 ${launchSettings.port} 被其它进程占用且无法清理，请先释放端口",
+                                startedAt = System.currentTimeMillis()
+                            )
+                            _state.value = errorState
+                            throw IllegalStateException(errorState.message)
+                        }
                     }
 
                     _state.value = IdaMcpSessionState(
@@ -243,6 +258,15 @@ class IdaMcpSessionManager private constructor(
         while (System.currentTimeMillis() < deadline) {
             if (isTcpOpen(port)) return true
             delay(500)
+        }
+        return false
+    }
+
+    private suspend fun waitUntilPortClosed(port: Int, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!isTcpOpen(port)) return true
+            delay(300)
         }
         return false
     }

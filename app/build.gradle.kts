@@ -41,8 +41,8 @@ android {
         // the app-private writable data directory for targetSdk >= 29. IDAdroid runs
         // proot from files/proot/bin/proot, so M1 intentionally targets API 28.
         targetSdk = 28
-        versionCode = 5
-        versionName = "v0.1.4"
+        versionCode = 6
+        versionName = "v0.1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
