@@ -197,6 +197,9 @@ fun SettingsScreen(
                                     }
                             }
                         } else {
+                            // Record user intent before stopping the service;
+                            // the service no longer clears the preference itself.
+                            settingsStore.setFloatingWindowEnabled(false)
                             FloatingWindowService.stop(context)
                         }
                     }

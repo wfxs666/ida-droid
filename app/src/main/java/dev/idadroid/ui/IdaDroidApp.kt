@@ -146,13 +146,18 @@ import dev.idadroid.vnc.GuiSessionState
 import dev.idadroid.vnc.GuiStatus
 import dev.idadroid.vnc.VncSessionManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private enum class IdaDroidScreen { Home, Settings, Agent, About }
 
 @Composable
-fun IdaDroidApp(initialAgent: Boolean = false) {
+fun IdaDroidApp(
+    initialAgent: Boolean = false,
+    agentRequest: StateFlow<Int>? = null
+) {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             val context = LocalContext.current
@@ -168,6 +173,7 @@ fun IdaDroidApp(initialAgent: Boolean = false) {
             val mcpState by mcpManager.state.collectAsState()
             val vncSettings by settingsStore.vncSettings.collectAsState()
             val scope = rememberCoroutineScope()
+            val agentRequestTick by (agentRequest ?: remember { MutableStateFlow(0) }).collectAsState()
             var currentScreen by remember { mutableStateOf(if (initialAgent) IdaDroidScreen.Agent else IdaDroidScreen.Home) }
             var importProgress by remember { mutableStateOf<ImportProgress?>(null) }
             var validationBusy by remember { mutableStateOf(false) }
@@ -180,6 +186,11 @@ fun IdaDroidApp(initialAgent: Boolean = false) {
             LaunchedEffect(Unit) {
                 manager.refresh()
                 agentManager.refresh()
+            }
+            // React to onNewIntent screen requests while the activity is already
+            // resumed (e.g. the floating window's "Agent 聊天" quick action).
+            LaunchedEffect(agentRequestTick) {
+                if (agentRequestTick > 0) currentScreen = IdaDroidScreen.Agent
             }
             LaunchedEffect(envState, vncSettings.port) {
                 if (envState.isReady) {

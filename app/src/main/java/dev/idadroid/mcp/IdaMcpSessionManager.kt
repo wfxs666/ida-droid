@@ -60,11 +60,12 @@ class IdaMcpSessionManager private constructor(
                     materializeLogDir()
 
                     if (isTcpOpen(launchSettings.port)) {
-                        // Port is open. If it is our own live process, we are
-                        // already running; otherwise a stale process from a
-                        // previous session holds the port, so clean it up and
-                        // start fresh instead of reporting a phantom "running".
-                        if (activeProcess?.isAlive == true) {
+                        // Port is open. If it is our own live process bound to
+                        // the same endpoint, we are already running; otherwise a
+                        // stale process from a previous session holds the port,
+                        // so clean it up and start fresh instead of reporting a
+                        // phantom "running".
+                        if (activeProcess?.isAlive == true && activeProcessBind == launchSettings.bind) {
                             val running = runningState(launchSettings, "IDA MCP HTTP 已在端口 ${launchSettings.port} 运行")
                             _state.value = running
                             return@runCatching running
@@ -87,6 +88,7 @@ class IdaMcpSessionManager private constructor(
                         .also { it.environment().putAll(spec.environment) }
                         .start()
                     activeProcess = process
+                    activeProcessBind = launchSettings.bind
                     pumpProcessOutput(process, logFile())
 
                     val ready = waitUntilTcpOpen(launchSettings.port, timeoutMs = 30_000)
@@ -96,6 +98,7 @@ class IdaMcpSessionManager private constructor(
                         runCatching { process.destroy() }
                         if (!process.waitFor(2, TimeUnit.SECONDS)) runCatching { process.destroyForcibly() }
                         activeProcess = null
+                        activeProcessBind = null
                         val logTail = readLogTail(60).ifBlank { "暂无 ida-mcp-http.log" }
                         val errorState = IdaMcpSessionState(
                             status = IdaMcpStatus.Error,
@@ -140,6 +143,7 @@ class IdaMcpSessionManager private constructor(
                         }
                     }
                     activeProcess = null
+                    activeProcessBind = null
                     val result = runtime.run(buildStopCommand(settings), timeoutMs = 15_000)
                     if (result.exitCode != 0 && !result.timedOut) {
                         throw IllegalStateException(result.stderr.ifBlank { result.stdout }.ifBlank { "停止命令失败" })
@@ -280,6 +284,10 @@ class IdaMcpSessionManager private constructor(
 
         @Volatile
         private var activeProcess: Process? = null
+
+        /** Bind endpoint ("host:port") the active process was launched with. */
+        @Volatile
+        private var activeProcessBind: String? = null
 
         @Volatile
         private var instance: IdaMcpSessionManager? = null

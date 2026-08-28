@@ -181,7 +181,9 @@ class FloatingWindowService : Service() {
             scope.launch {
                 while (isActive) {
                     runCatching { refreshStatus() }
-                    delay(2_000)
+                    // Poll fast while the panel is visible (status rows are on
+                    // screen); slow down when hidden to spare CPU/battery.
+                    delay(if (panelVisible) 2_000 else 10_000)
                 }
             }
         }
@@ -196,7 +198,10 @@ class FloatingWindowService : Service() {
         bubble?.let { runCatching { windowManager.removeView(it) } }
         bubble = null
         bubbleParams = null
-        settingsStore.setFloatingWindowEnabled(false)
+        // Do NOT clear the enabled preference here: onDestroy runs for every
+        // stop reason (system kill, memory pressure, forced stop), and clearing
+        // it would flip the settings toggle off although the user never disabled
+        // the overlay. User-initiated disable paths set the preference first.
         super.onDestroy()
     }
 
@@ -301,7 +306,11 @@ class FloatingWindowService : Service() {
         root.addView(toggleIdaButton!!, buttonLp(0))
         toggleMcpButton = actionButton("启动 MCP", COLOR_PRIMARY) { toggleMcp() }
         root.addView(toggleMcpButton!!, buttonLp(0))
-        root.addView(actionButton("关闭悬浮窗", COLOR_DANGER) { stopSelf() }, buttonLp(0))
+        root.addView(actionButton("关闭悬浮窗", COLOR_DANGER) {
+            // User-initiated disable: record intent, then stop the service.
+            settingsStore.setFloatingWindowEnabled(false)
+            stopSelf()
+        }, buttonLp(0))
 
         val params = WindowManager.LayoutParams(
             panelWidth,

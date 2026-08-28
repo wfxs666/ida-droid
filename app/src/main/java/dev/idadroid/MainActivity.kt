@@ -18,6 +18,7 @@ import dev.idadroid.service.FloatingWindowService
 import dev.idadroid.service.KeepAliveService
 import dev.idadroid.settings.IdaDroidSettings
 import dev.idadroid.ui.IdaDroidApp
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -37,12 +38,25 @@ class MainActivity : ComponentActivity() {
         startKeepAliveAndCheckBattery()
     }
 
+    /** Monotonic counter bumped whenever an intent asks to open the Agent screen. */
+    private val agentRequest = MutableStateFlow(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent?.getStringExtra(EXTRA_SCREEN) == SCREEN_AGENT) agentRequest.value += 1
         val initialAgent = intent?.getStringExtra(EXTRA_SCREEN) == SCREEN_AGENT
-        setContent { IdaDroidApp(initialAgent = initialAgent) }
+        setContent { IdaDroidApp(initialAgent = initialAgent, agentRequest = agentRequest) }
         checkStartupPermissions()
         restoreFloatingWindowIfEnabled()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // When the task already holds MainActivity the launcher intent resumes
+        // this instance via onNewIntent; route the screen request into the flow
+        // so the composable can react instead of staying on the current screen.
+        if (intent.getStringExtra(EXTRA_SCREEN) == SCREEN_AGENT) agentRequest.value += 1
     }
 
     private fun restoreFloatingWindowIfEnabled() {
