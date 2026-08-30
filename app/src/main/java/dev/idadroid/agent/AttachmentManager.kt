@@ -39,16 +39,38 @@ class AttachmentManager(
     private val paths: EnvironmentPaths = EnvironmentPaths.of(context)
 ) {
     private val appContext = context.applicationContext
-    private val uploadHostDir: File get() = File(paths.rootfsDir, "root/pi_workspace/.upload")
+    private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
+    private val workspaceProotPath: String get() = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
+    private val uploadHostDir: File get() {
+        val ws = workspaceProotPath
+        val rel = ws.removePrefix("/").ifBlank { "root/pi_workspace" }
+        return File(paths.rootfsDir, "$rel/.upload")
+    }
+    private val uploadProotPath: String get() = "$workspaceProotPath/.upload"
 
     suspend fun readDraft(uri: Uri, maxBytes: Long = 50L * 1024L * 1024L): DraftAttachment = withContext(Dispatchers.IO) {
         val name = queryDisplayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "attachment"
         val mime = appContext.contentResolver.getType(uri).orEmpty().ifBlank { guessMimeType(name) ?: "application/octet-stream" }
+        // 先通过 cursor 查询文件大小，避免对超大文件 readBytes 导致 OOM
+        val fileSize = queryFileSize(uri)
+        if (fileSize != null && fileSize > maxBytes) {
+            error("附件过大：${fileSize / 1024 / 1024} MiB，当前限制 ${maxBytes / 1024 / 1024} MiB")
+        }
         val input = appContext.contentResolver.openInputStream(uri) ?: error("无法打开附件：$uri")
         val bytes = input.use { stream ->
-            val data = stream.readBytes()
-            require(data.size <= maxBytes) { "附件过大：${data.size / 1024 / 1024} MiB，当前限制 ${maxBytes / 1024 / 1024} MiB" }
-            data
+            // 限制读取长度，防止 cursor 报告的 size 不准确或缺失时 OOM
+            val maxIntBytes = maxBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(8 * 1024)
+            var total = 0
+            while (total <= maxIntBytes) {
+                val n = stream.read(buf)
+                if (n < 0) break
+                out.write(buf, 0, n)
+                total += n
+            }
+            require(total <= maxIntBytes) { "附件过大：${total / 1024 / 1024} MiB，当前限制 ${maxBytes / 1024 / 1024} MiB" }
+            out.toByteArray()
         }
         DraftAttachment(safeFileName(name), mime, bytes, mime.startsWith("image/") || isImagePath(name))
     }
@@ -58,7 +80,7 @@ class AttachmentManager(
         attachments.map { draft ->
             val file = uniqueFile(uploadHostDir, draft.name)
             file.writeBytes(draft.bytes)
-            val prootPath = "/root/pi_workspace/.upload/${file.name}"
+            val prootPath = "$uploadProotPath/${file.name}"
             StoredAttachment(
                 display = if (draft.isImage) {
                     ChatAttachment.Image(draft.name, draft.mimeType.ifBlank { "image/png" }, Base64.encodeToString(draft.bytes, Base64.NO_WRAP), path = prootPath, size = draft.size)
@@ -73,7 +95,7 @@ class AttachmentManager(
         }
     }
 
-    suspend fun expandFileReferencesForPrompt(message: String, cwd: String = "/root/pi_workspace"): ExpandedPrompt = withContext(Dispatchers.IO) {
+    suspend fun expandFileReferencesForPrompt(message: String, cwd: String = workspaceProotPath): ExpandedPrompt = withContext(Dispatchers.IO) {
         val refs = parseFileRefs(message)
         if (refs.isEmpty()) return@withContext ExpandedPrompt(message, emptyList(), emptySet())
         val attempted = linkedSetOf<String>()
@@ -86,12 +108,28 @@ class AttachmentManager(
             val file = resolved.hostFile.takeIf { it.isFile && it.canRead() } ?: return@forEach
             attached += resolved.prootPath
             val mime = guessMimeType(file.name) ?: "text/plain"
+            val maxInlineBytes = 256 * 1024L  // 256 KiB 内联上限
             if (mime.startsWith("image/") || isImagePath(file.name)) {
-                images += ImagePayload(data = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP), mimeType = mime.takeIf { it.startsWith("image/") } ?: "image/png")
-                fileText.append("<file name=\"").append(resolved.prootPath).append("\"></file>\n")
+                if (file.length() <= maxInlineBytes) {
+                    images += ImagePayload(data = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP), mimeType = mime.takeIf { it.startsWith("image/") } ?: "image/png")
+                }
+                // 修复：原代码字符串转义错误，把 if 表达式的两个分支合并进了一个
+                // 巨大的字符串字面量里（并在字符串外留下裸反斜杠，导致编译失败）。
+                // 这里拆成清晰的 if/else，分别拼装标签尾部。
+                val tagTail = if (file.length() > maxInlineBytes) {
+                    "\" size=${file.length()} (too large to inline)>"
+                } else {
+                    "\">"
+                }
+                fileText.append("<file name=\"").append(resolved.prootPath).append(tagTail).append("</file>\n")
             } else {
                 fileText.append("<file name=\"").append(resolved.prootPath).append("\">\n")
-                fileText.append(file.readText(Charsets.UTF_8)).append("\n</file>\n")
+                if (file.length() <= maxInlineBytes) {
+                    fileText.append(file.readText(Charsets.UTF_8))
+                } else {
+                    fileText.append("(文件过大，${file.length()} bytes，已省略内容，请用 read_file 工具查看)")
+                }
+                fileText.append("\n</file>\n")
             }
         }
         ExpandedPrompt(if (fileText.isNotEmpty()) fileText.toString() + message else message, images, attached)
@@ -106,17 +144,27 @@ class AttachmentManager(
         }
     }.getOrNull()
 
+    private fun queryFileSize(uri: Uri): Long? = runCatching {
+        appContext.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            if (cursor.isNull(0)) return@use null
+            cursor.getLong(0)
+        }
+    }.getOrNull()
+
     private data class WorkspaceRef(val prootPath: String, val hostFile: File)
 
     private fun resolveWorkspaceReference(input: String, cwd: String): WorkspaceRef {
-        val base = normalizeWorkspacePath(cwd.ifBlank { "/root/pi_workspace" })
+        val ws = workspaceProotPath
+        val base = normalizeWorkspacePath(cwd.ifBlank { ws })
         val raw = input.trim()
         val abs = if (raw.startsWith("/")) normalizeWorkspacePath(raw) else normalizeWorkspacePath("$base/$raw")
-        if (abs != "/root/pi_workspace" && !abs.startsWith("/root/pi_workspace/")) {
-            throw IllegalArgumentException("文件路径必须位于 /root/pi_workspace 内：$input")
+        if (abs != ws && !abs.startsWith("$ws/")) {
+            throw IllegalArgumentException("文件路径必须位于 $ws 内：$input")
         }
-        val rel = abs.removePrefix("/root/pi_workspace").trimStart('/')
-        return WorkspaceRef(abs, if (rel.isBlank()) File(paths.rootfsDir, "root/pi_workspace") else File(paths.rootfsDir, "root/pi_workspace/$rel"))
+        val rel = abs.removePrefix(ws).trimStart('/')
+        val hostRoot = if (ws.startsWith("/root/")) File(paths.rootfsDir, ws.removePrefix("/")) else File(ws)
+        return WorkspaceRef(abs, if (rel.isBlank()) hostRoot else File(hostRoot, rel))
     }
 
     private fun normalizeWorkspacePath(value: String): String {
@@ -128,7 +176,7 @@ class AttachmentManager(
                 else -> parts += part
             }
         }
-        return "/${parts.joinToString("/")}".trimEnd('/').ifBlank { "/root/pi_workspace" }
+        return "/${parts.joinToString("/")}".trimEnd('/').ifBlank { workspaceProotPath }
     }
 
     private fun parseFileRefs(text: String): List<String> {

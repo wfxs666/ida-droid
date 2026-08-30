@@ -21,8 +21,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -47,10 +45,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
@@ -68,7 +64,6 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -111,6 +106,10 @@ fun MainContent(
     onStopMcp: () -> Unit,
     onRestartMcp: (IdaMcpLaunchSettings) -> Unit,
     onShowMcpLog: () -> Unit,
+    onToggleMcpMonitoring: (Boolean) -> Unit = {},
+    onMcpHealthCheck: () -> Unit = {},
+    onUploadToMcp: () -> Unit = {},
+    onOpenInIda: () -> Unit = {},
     onRevalidate: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -193,14 +192,18 @@ fun MainContent(
                 onStartMcp = onStartMcp,
                 onStopMcp = onStopMcp,
                 onRestartMcp = onRestartMcp,
-                onShowMcpLog = onShowMcpLog
+                onShowMcpLog = onShowMcpLog,
+                onToggleMonitoring = onToggleMcpMonitoring,
+                onHealthCheck = onMcpHealthCheck,
+                onUploadToMcp = onUploadToMcp,
+                onOpenInIda = onOpenInIda
             )
         }
         HomePanelOverlay(
             visible = showFilePanel,
             fromStart = false,
             title = "文件浏览器",
-            subtitle = "管理 /root/pi_workspace 文件与导入 APK",
+            subtitle = "管理工作区文件与导入 APK",
             onClose = { showFilePanel = false }
         ) {
             HomeFileBrowserPanel(fileManager = fileManager)
@@ -606,7 +609,7 @@ private fun TerminalCommandButtons(onRunTerminalCommand: (String) -> Unit) {
         "whoami" to "whoami",
         "ls IDA" to "ls ~/ida-pro-9.3",
         "pi --version" to "pi --version",
-        "validate" to "/root/pi_workspace/.idadroid/scripts/validate.sh"
+        "validate" to "${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/.idadroid/scripts/validate.sh"
     )
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         commands.chunked(2).forEach { row ->

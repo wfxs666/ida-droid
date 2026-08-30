@@ -12,7 +12,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -44,7 +43,7 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.NoteAdd
+import androidx.compose.material.icons.automirrored.rounded.NoteAdd
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Upload
@@ -103,7 +102,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("idadroid_file_browser", android.content.Context.MODE_PRIVATE) }
-    var path by remember { mutableStateOf(prefs.getString("path", "/root/pi_workspace") ?: "/root/pi_workspace") }
+    var path by remember { mutableStateOf(prefs.getString("path", dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH) ?: "/root/pi_workspace") }
     var bookmarks by remember {
         mutableStateOf(
             prefs.getStringSet("bookmarks", emptySet())
@@ -153,7 +152,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         scope.launch {
             loading = true
             error = null
-            runCatching { fileManager.listFiles(path) }
+            dev.idadroid.util.runCatchingSuspending { fileManager.listFiles(path) }
                 .onSuccess { entries = it }
                 .onFailure { error = it.message }
             loading = false
@@ -170,7 +169,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         scope.launch {
             loading = true
             error = null
-            runCatching { uris.forEach { uri -> fileManager.uploadFile(path, uri) } }
+            dev.idadroid.util.runCatchingSuspending { uris.forEach { uri -> fileManager.uploadFile(path, uri) } }
                 .onFailure { error = "上传失败：${it.message}" }
             loading = false
             reload()
@@ -184,7 +183,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         scope.launch {
             loading = true
             error = null
-            runCatching { fileManager.saveFileAs(entry.path, uri) }
+            dev.idadroid.util.runCatchingSuspending { fileManager.saveFileAs(entry.path, uri) }
                 .onFailure { error = "另存为失败：${it.message}" }
             loading = false
         }
@@ -194,7 +193,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         if (entry.type != "file") return
         scope.launch {
             error = null
-            runCatching { fileManager.fileForSharing(entry.path) }
+            dev.idadroid.util.runCatchingSuspending { fileManager.fileForSharing(entry.path) }
                 .onSuccess { file ->
                     runCatching { RootfsFileSharing.openFile(context, file) }
                         .onFailure { error = "打开失败：${it.message}" }
@@ -259,7 +258,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
                                     }
                                     TextButton(onClick = {
                                         scope.launch {
-                                            runCatching { fileManager.importInstalledApk(app.packageName, app.label, app.sourceDir, path) }
+                                            dev.idadroid.util.runCatchingSuspending { fileManager.importInstalledApk(app.packageName, app.label, app.sourceDir, path) }
                                                 .onSuccess { reload(); showApps = false }
                                                 .onFailure { error = "导入 APK 失败：${it.message}" }
                                         }
@@ -320,7 +319,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
                 Text("应用", fontSize = 13.sp)
             }
             OutlinedButton(onClick = { createKind = "file"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
-                Icon(Icons.Rounded.NoteAdd, contentDescription = null, modifier = Modifier.size(17.dp))
+                Icon(Icons.AutoMirrored.Rounded.NoteAdd, contentDescription = null, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("文件", fontSize = 13.sp)
             }
@@ -354,7 +353,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         createKind?.let { kind ->
             Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                 Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(if (kind == "dir") Icons.Rounded.CreateNewFolder else Icons.Rounded.NoteAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Icon(if (kind == "dir") Icons.Rounded.CreateNewFolder else Icons.AutoMirrored.Rounded.NoteAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     OutlinedTextField(createName, { createName = it }, label = { Text(if (kind == "dir") "目录名" else "文件名") }, singleLine = true, modifier = Modifier.weight(1f))
                     TextButton(onClick = { createKind = null; createName = "" }) { Text("取消") }
                     Button(onClick = {
@@ -362,7 +361,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
                         if (!isSafeContainerFileName(name)) { error = "名称不能包含 /、\\ 或 .."; return@Button }
                         scope.launch {
                             error = null
-                            runCatching {
+                            dev.idadroid.util.runCatchingSuspending {
                                 val target = createTargetPath(name)
                                 if (kind == "dir") {
                                     fileManager.createDirectory(target)
@@ -382,9 +381,11 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainerLowest, shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+            // 把排序结果记住，避免每次重组都对整个目录列表重新排序（大目录会明显卡顿）
+            val sortedEntries = remember(entries) { entries.sortedWith(compareBy<ContainerFileEntry> { it.type != "directory" }.thenBy { it.name.lowercase() }) }
             androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxSize()) {
                 item { HomeFileHeaderRow() }
-                items(entries.sortedWith(compareBy<ContainerFileEntry> { it.type != "directory" }.thenBy { it.name.lowercase() }), key = { it.path }) { entry ->
+                items(sortedEntries, key = { it.path }) { entry ->
                     HomeFileRow(
                         entry = entry,
                         onOpen = {
@@ -445,7 +446,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
     deleteEntry?.let { entry ->
         AlertDialog(
             onDismissRequest = { deleteEntry = null },
-            confirmButton = { Button(onClick = { scope.launch { fileManager.deleteFile(entry.path); deleteEntry = null; reload() } }) { Text("确定") } },
+            confirmButton = { Button(onClick = { scope.launch { dev.idadroid.util.runCatchingSuspending { fileManager.deleteFile(entry.path) }.onSuccess { deleteEntry = null; reload() }.onFailure { error = "删除失败：${it.message}" } } }) { Text("确定") } },
             dismissButton = { TextButton(onClick = { deleteEntry = null }) { Text("取消") } },
             title = { Text("删除 ${entry.name}") },
             text = { Text("确定删除 ${entry.path}？") }
@@ -531,7 +532,7 @@ private fun HomeFileRow(entry: ContainerFileEntry, onOpen: () -> Unit, onMore: (
 
 private fun normalizeContainerFileBrowserPath(value: String): String {
     val raw = value.trim().ifBlank { "/root/pi_workspace" }.replace('\\', '/')
-    val absolute = if (raw.startsWith('/')) raw else "/root/pi_workspace/$raw"
+    val absolute = if (raw.startsWith('/')) raw else "${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/$raw"
     val parts = mutableListOf<String>()
     absolute.split('/').forEach { part ->
         when {
