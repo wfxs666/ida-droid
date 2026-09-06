@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.automirrored.rounded.NoteAdd
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SdCard
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material3.AlertDialog
@@ -102,7 +103,16 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("idadroid_file_browser", android.content.Context.MODE_PRIVATE) }
-    var path by remember { mutableStateOf(prefs.getString("path", dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH) ?: "/root/pi_workspace") }
+    // 默认跟随用户设置的“Pi 工作区路径”（可能是 /sdcard、/storage 等外部目录），
+    // 有历史记录时保持历史；都没有时回退到 /root/pi_workspace。
+    val defaultPath = remember {
+        dev.idadroid.settings.IdaDroidSettings(context.applicationContext)
+            .envSettings.value.workspacePath
+            .ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
+    }
+    var path by remember {
+        mutableStateOf(prefs.getString("path", defaultPath) ?: defaultPath)
+    }
     var bookmarks by remember {
         mutableStateOf(
             prefs.getStringSet("bookmarks", emptySet())
@@ -296,6 +306,11 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
                     modifier = Modifier.size(19.dp),
                     tint = if (currentBookmarked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSecondaryContainer
                 )
+            }
+            FilledTonalButton(onClick = { path = "/sdcard" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+                Icon(Icons.Rounded.SdCard, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("外部", fontSize = 13.sp)
             }
             FilledTonalButton(onClick = { pickUpload.launch(arrayOf("*/*")) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
                 Icon(Icons.Rounded.Upload, contentDescription = null, modifier = Modifier.size(17.dp))

@@ -416,7 +416,7 @@ class IdaMcpSessionManager private constructor(
         paths.logsDir.mkdirs()
     }
 
-    private fun logFile(): File = File(paths.logsDir, "ida-mcp-http.log")
+    fun logFile(): File = File(paths.logsDir, "ida-mcp-http.log")
 
     @Volatile private var activeProcess: Process? = null
 

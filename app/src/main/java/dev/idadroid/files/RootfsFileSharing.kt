@@ -29,6 +29,21 @@ object RootfsFileSharing {
         context.startActivity(chooser)
     }
 
+    /** 通过系统分享面板把文件作为附件发送给其它应用（ACTION_SEND）。 */
+    fun shareFile(context: Context, file: File, mimeType: String? = null) {
+        val uri = contentUri(context, file)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = mimeType ?: mimeTypeFor(file.name)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_TITLE, file.name)
+            clipData = ClipData.newUri(context.contentResolver, file.name, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val chooser = Intent.createChooser(send, "分享 ${file.name}")
+        chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        context.startActivity(chooser)
+    }
+
     fun mimeTypeFor(fileName: String): String {
         val extension = fileName.substringAfterLast('.', missingDelimiterValue = "")
             .lowercase(Locale.ROOT)

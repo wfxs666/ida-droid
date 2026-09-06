@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -52,6 +53,7 @@ import dev.idadroid.env.EnvironmentManager
 import dev.idadroid.env.ImportProgress
 import dev.idadroid.env.ImportStage
 import dev.idadroid.files.ContainerFileManager
+import dev.idadroid.files.RootfsFileSharing
 import dev.idadroid.mcp.IdaMcpSessionManager
 import dev.idadroid.settings.IdaDroidSettings
 import dev.idadroid.terminal.ProotTerminalActivity
@@ -432,6 +434,7 @@ fun IdaDroidApp(
             if (showMcpLog) {
                 // 异步加载 MCP 日志，避免在主线程上同步读取文件导致 ANR
                 var mcpLog by remember { mutableStateOf<String?>(null) }
+                var exportingLog by remember { mutableStateOf(false) }
                 LaunchedEffect(showMcpLog, mcpState) {
                     if (!showMcpLog) return@LaunchedEffect
                     mcpLog = withContext(Dispatchers.IO) { mcpManager.readLogTail() }
@@ -439,7 +442,34 @@ fun IdaDroidApp(
                 AlertDialog(
                     onDismissRequest = { showMcpLog = false },
                     confirmButton = {
-                        TextButton(onClick = { showMcpLog = false }) { Text("关闭") }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (!exportingLog) {
+                                TextButton(
+                                    onClick = {
+                                        scope.launch {
+                                            exportingLog = true
+                                            kotlin.runCatching {
+                                                val exported = withContext(Dispatchers.IO) {
+                                                    val src = mcpManager.logFile()
+                                                    require(src.isFile && src.length() > 0) { "暂无 MCP 日志文件" }
+                                                    val sharedDir = java.io.File(context.cacheDir, "shared").apply { mkdirs() }
+                                                    val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+                                                        .format(java.util.Date())
+                                                    val dest = java.io.File(sharedDir, "ida-mcp-http-$ts.log")
+                                                    src.copyTo(dest, overwrite = true)
+                                                    dest
+                                                }
+                                                RootfsFileSharing.shareFile(context, exported, "text/plain")
+                                            }
+                                                .onSuccess { transientMessage = "已导出 MCP 日志" }
+                                                .onFailure { e -> transientMessage = "导出 MCP 日志失败：${e.message}" }
+                                            exportingLog = false
+                                        }
+                                    }
+                                ) { Text("导出分享") }
+                            }
+                            TextButton(onClick = { showMcpLog = false }) { Text("关闭") }
+                        }
                     },
                     title = { Text("IDA MCP 日志") },
                     text = {
