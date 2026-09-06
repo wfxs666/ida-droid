@@ -7,6 +7,8 @@ import dev.idadroid.env.EnvironmentPaths
 import dev.idadroid.proot.IdaProotRuntime
 import dev.idadroid.util.safePid
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.time.Instant
@@ -196,7 +198,7 @@ class IdaMcpSessionManager private constructor(
                     activeProcessBind = launchSettings.bind
                     pumpProcessOutput(process, logFile())
 
-                    val ready = waitUntilTcpOpen(launchSettings.port, timeoutMs = 30_000, bindHost = launchSettings.bindHost)
+                    val ready = waitUntilMcpReady(process, launchSettings.port, launchSettings.bindHost, timeoutMs = 30_000)
                     if (!ready) {
                         // Tear down the half-started process so it cannot keep
                         // holding the port or linger as a zombie.
@@ -385,6 +387,49 @@ class IdaMcpSessionManager private constructor(
             delay(500)
         }
         return false
+    }
+    /**
+     * MCP 就绪判定：不能只依赖端口开放 —— 若别的进程抢占了该端口，waitUntilTcpOpen
+     * 会误报就绪而真正的 MCP 进程 bind 失败退出。要求：
+     * 1. 由我们启动的进程仍然存活（bind 失败/提前退出 → 立即判定未就绪）；
+     * 2. 端口 TCP 开放；
+     * 3. 端口上有 HTTP 响应（MCP 是 HTTP 服务，任意 TCP 监听者不会应答）。
+     */
+    private suspend fun waitUntilMcpReady(
+        process: Process,
+        port: Int,
+        bindHost: String,
+        timeoutMs: Long
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!process.isAlive) return false
+            if (isTcpOpen(port, bindHost) && isMcpHttpResponding(port, bindHost)) return true
+            delay(500)
+        }
+        return false
+    }
+
+    /** 探测端口上的 HTTP 服务是否应答（任意 2xx/3xx/4xx/5xx 均视为有 HTTP 服务）。 */
+    private fun isMcpHttpResponding(port: Int, bindHost: String): Boolean = runCatching {
+        val host = httpHost(bindHost)
+        val conn = (URL("http://$host:$port/api/transfers").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 1200
+            readTimeout = 1200
+        }
+        try {
+            val code = conn.responseCode
+            code >= 200 && code < 600
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrDefault(false)
+
+    /** bindHost → URL 主机（IPv6 字面量加方括号）。 */
+    private fun httpHost(bindHost: String): String {
+        val host = bindHost.trim().trim('[', ']')
+        return if (host.contains(':')) "[$host]" else host
     }
 
     private suspend fun waitUntilPortClosed(port: Int, timeoutMs: Long, bindHost: String? = null): Boolean {

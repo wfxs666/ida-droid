@@ -98,6 +98,44 @@ class ToolContext(
     /** 工作区在主机文件系统上的根目录 */
     val workspaceDir: File get() = File(paths.rootfsDir, workspaceRel)
 
+    /** MCP 文件传输目录在主机文件系统上的位置（guest 路径 /root/.mcp-transfer）。 */
+    val transferHostDir: File get() = File(paths.rootfsDir, "root/.mcp-transfer")
+
+    /**
+     * 把 AI 传入的路径归一化为容器内 guest 路径：
+     * - 宿主形态路径（如 /data/user/0/dev.idadroid/files/envs/default/rootfs/root/...）
+     *   → 剥掉 rootfsDir 前缀，得到 /root/...（容器内可见）；
+     * - 其余路径（/root/...、/sdcard/...、相对路径）原样返回。
+     */
+    fun toGuestPath(path: String): String {
+        val raw = path.replace('\\', '/')
+        val root = paths.rootfsDir.absolutePath.replace('\\', '/').trimEnd('/')
+        return if (raw.startsWith("$root/")) raw.removePrefix(root) else raw
+    }
+
+    /**
+     * 将可读区域（工作区 + MCP transfer 目录）内的路径解析为实际文件，
+     * 防止路径遍历攻击，并支持宿主形态（/data/user/0/...）路径自动转换。
+     * 供 read/list/info 等只读工具使用。
+     */
+    fun resolveReadableFile(path: String): File {
+        val guest = toGuestPath(path)
+        val resolved = if (guest.startsWith("/")) {
+            File(paths.rootfsDir, guest.removePrefix("/"))
+        } else {
+            File(workspaceDir, guest)
+        }
+        val canonical = resolved.canonicalFile
+        val allowedRoots = listOf(workspaceDir.canonicalFile, transferHostDir.canonicalFile)
+        val inside = allowedRoots.any { base ->
+            canonical.path == base.path || canonical.path.startsWith(base.path + File.separator)
+        }
+        if (!inside) {
+            throw SecurityException("路径越界：$path（可访问：工作区与 /root/.mcp-transfer）")
+        }
+        return canonical
+    }
+
     /**
      * 将工作区内路径解析为实际文件系统路径，防止路径遍历攻击。
      *

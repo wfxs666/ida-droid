@@ -392,7 +392,11 @@ class PiAgentManager(
             persistMessages(bound)
         }
         conversationEngine.reset()
-        engineSessionId = sessionId
+        // 仅当配置可用（能恢复历史或确认空会话）时才标记引擎已绑定该会话。
+        // config == null（例如尚未配置 API Key）时保持未绑定，让之后配置就绪的
+        // send/loadMessages 能重新进入本方法并加载文件历史 —— 否则 send 会因
+        // engineSessionId == sessionId 提前返回，引擎空转导致历史永久丢失。
+        engineSessionId = if (config != null) sessionId else null
         if (dtos.isNotEmpty() && config != null) {
             conversationEngine.restoreFromMessages(dtos, config)
         }
