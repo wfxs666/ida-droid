@@ -405,31 +405,50 @@ class IdaMcpSessionManager private constructor(
         timeoutMs: Long
     ): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
+        var tcpOpenSince = -1L
         while (System.currentTimeMillis() < deadline) {
+            // 由我们启动的进程提前退出（例如 bind 失败）→ 立即判定未就绪，
+            // 防止把其它进程抢占的端口误报为 MCP 就绪。
             if (!process.isAlive) return false
-            if (isTcpOpen(port, bindHost) && isMcpHttpResponding(port, bindHost)) return true
+            val open = isTcpOpen(port, bindHost)
+            if (open) {
+                if (tcpOpenSince < 0) tcpOpenSince = System.currentTimeMillis()
+                // MCP 特定 HTTP 应答优先；若 HTTP 层探测端点不被支持（连接被重置/
+                // 超时），在进程存活且端口已稳定开放一段时间后也视为就绪 ——
+                // 否则会把正常启动的 MCP 误杀（30 秒超时 → destroy → 反复重启）。
+                val httpOk = isMcpHttpResponding(port, bindHost)
+                val stable = System.currentTimeMillis() - tcpOpenSince >= 8_000
+                if (httpOk || stable) return true
+            } else {
+                tcpOpenSince = -1L
+            }
             delay(500)
         }
         return false
     }
 
+    /** MCP HTTP 探测端点候选（按顺序尝试，任一返回 HTTP 状态即视为应答）。 */
+    private val mcpProbePaths = listOf("/", "/api/health", "/api/transfers")
+
     /** 探测端口上的 HTTP 服务是否应答（任意 2xx/3xx/4xx/5xx 均视为有 HTTP 服务）。 */
     private fun isMcpHttpResponding(port: Int, bindHost: String): Boolean =
         probeHosts(bindHost).any { host ->
-            runCatching {
-                val urlHost = if (host.contains(':')) "[$host]" else host
-                val conn = (URL("http://$urlHost:$port/api/transfers").openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 1200
-                    readTimeout = 1200
-                }
-                try {
-                    val code = conn.responseCode
-                    code >= 200 && code < 600
-                } finally {
-                    conn.disconnect()
-                }
-            }.getOrDefault(false)
+            mcpProbePaths.any { probePath ->
+                runCatching {
+                    val urlHost = if (host.contains(':')) "[$host]" else host
+                    val conn = (URL("http://$urlHost:$port$probePath").openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        connectTimeout = 1200
+                        readTimeout = 1200
+                    }
+                    try {
+                        val code = conn.responseCode
+                        code >= 200 && code < 600
+                    } finally {
+                        conn.disconnect()
+                    }
+                }.getOrDefault(false)
+            }
         }
 
     private suspend fun waitUntilPortClosed(port: Int, timeoutMs: Long, bindHost: String? = null): Boolean {
