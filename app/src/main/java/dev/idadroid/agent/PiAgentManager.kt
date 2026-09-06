@@ -160,16 +160,18 @@ class PiAgentManager(
                 if (current != null && current != id && _state.value.turnActive) {
                     runCatching { abortSession(current) }
                 }
+                // 先把引擎绑定到目标会话（必要时持久化旧会话并从文件恢复历史）。
+                // 绑定成功后才提交 active：若这里失败（读历史文件异常等），store 仍保持
+                // 旧 active，不会出现"store 已切换但引擎丢失目标历史"的错位。
+                val session = repo.listSessions().firstOrNull { it.id == id }
+                    ?: error("session 不存在：$id")
+                val convConfig = session.let { resolveConvConfig(it.id, it) }
+                bindEngineToSession(id, convConfig)
                 repo.setActive(id)
             } catch (e: Exception) {
                 setError("切换 Session 失败：${e.message}")
                 return@launch
             }
-            val session = repo.listSessions().firstOrNull { it.id == id }
-            val convConfig = session?.let { resolveConvConfig(it.id, it) }
-            // 把引擎上下文切换到目标会话（必要时先持久化旧会话、再从文件恢复历史）
-            runCatching { bindEngineToSession(id, convConfig) }
-                .onFailure { e -> setError("切换 Session 失败：${e.message}") }
             refresh()
             loadMessages(id)
         }
@@ -342,11 +344,17 @@ class PiAgentManager(
         scope.launch {
             val sessionId = id ?: _state.value.activeSessionId ?: return@launch
             _state.update { it.copy(messagesLoading = true) }
-            val session = repo.listSessions().firstOrNull { it.id == sessionId }
-            val convConfig = session?.let { resolveConvConfig(it.id, it) }
-            bindEngineToSession(sessionId, convConfig)
-            val messages = withContext(Dispatchers.IO) { loadMessagesInternal(sessionId) }
-            _state.update { it.copy(messages = messages, messagesLoading = false) }
+            try {
+                val session = repo.listSessions().firstOrNull { it.id == sessionId }
+                val convConfig = session?.let { resolveConvConfig(it.id, it) }
+                // 引擎绑定失败（历史文件读取异常）不阻塞展示：loadMessagesInternal 会回退读文件
+                runCatching { bindEngineToSession(sessionId, convConfig) }
+                val messages = withContext(Dispatchers.IO) { loadMessagesInternal(sessionId) }
+                _state.update { it.copy(messages = messages, messagesLoading = false) }
+            } catch (e: Exception) {
+                setError("加载消息失败：${e.message}")
+                _state.update { it.copy(messagesLoading = false) }
+            }
         }
     }
 
@@ -355,28 +363,37 @@ class PiAgentManager(
      * 切换会话时先把旧上下文持久化到旧会话文件，重置引擎，再从目标会话
      * 文件恢复历史消息。这样每个会话的消息互相隔离，不再"新建会话却显示
      * 上一个会话的内容"。调用方需保证当前没有正在运行的 send（切换前 abort）。
+     *
+     * 注意：目标历史文件的读取放在任何引擎状态变更之前 —— 若读取失败会抛异常，
+     * 引擎与 engineSessionId 均保持不变，调用方（如 selectSession）可以放弃切换，
+     * 不会出现"store 已切到目标会话但引擎丢失目标历史"的错位。
      */
     private suspend fun bindEngineToSession(sessionId: String, config: ConversationConfig?) {
         val bound = engineSessionId
         if (bound == sessionId) return
+        // 先读目标会话的历史（可能抛 IOException），确认能恢复再动引擎
+        var dtos = emptyList<ChatHttpClient.ChatMessageDto>()
+        if (config != null) {
+            val session = repo.listSessions().firstOrNull { it.id == sessionId }
+            val sessionFile = session?.sessionFile ?: defaultSessionFilePath(sessionId)
+            val file = sessionFileToHostFile(sessionFile)?.takeIf { it.isFile }
+            if (file != null) {
+                dtos = withContext(Dispatchers.IO) {
+                    file.readLines().mapNotNull { line ->
+                        val trimmed = line.trim()
+                        if (trimmed.isBlank()) null
+                        else runCatching { json.decodeFromString<ChatHttpClient.ChatMessageDto>(trimmed) }.getOrNull()
+                    }
+                }
+            }
+        }
         // 引擎里残留其它会话的上下文 → 先写回它的会话文件，避免丢失
         if (bound != null && conversationEngine.getMessages().isNotEmpty()) {
             persistMessages(bound)
         }
         conversationEngine.reset()
         engineSessionId = sessionId
-        if (config == null) return
-        val session = repo.listSessions().firstOrNull { it.id == sessionId } ?: return
-        val sessionFile = session.sessionFile ?: defaultSessionFilePath(sessionId)
-        val file = sessionFileToHostFile(sessionFile)?.takeIf { it.isFile } ?: return
-        val dtos = withContext(Dispatchers.IO) {
-            file.readLines().mapNotNull { line ->
-                val trimmed = line.trim()
-                if (trimmed.isBlank()) null
-                else runCatching { json.decodeFromString<ChatHttpClient.ChatMessageDto>(trimmed) }.getOrNull()
-            }
-        }
-        if (dtos.isNotEmpty()) {
+        if (dtos.isNotEmpty() && config != null) {
             conversationEngine.restoreFromMessages(dtos, config)
         }
     }

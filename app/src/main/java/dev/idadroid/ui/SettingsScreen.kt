@@ -816,6 +816,10 @@ fun SettingsScreen(
                 settingsStore.resetEnvDefaults()
                 settingsStore.updateThemeMode(IdaDroidSettings.THEME_SYSTEM)
                 settingsStore.updateDynamicColor(true)
+                // 恢复全部默认设置时同时关闭悬浮窗（含停止正在运行的服务），
+                // 否则已启用的覆盖层会保持可见，与“恢复默认”语义不一致。
+                settingsStore.setFloatingWindowEnabled(false)
+                FloatingWindowService.stop(context)
                 confirmResetAll = false
                 Toast.makeText(context, "已恢复全部默认设置", Toast.LENGTH_SHORT).show()
             },

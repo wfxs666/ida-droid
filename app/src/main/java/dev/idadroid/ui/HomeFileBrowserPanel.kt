@@ -205,7 +205,11 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
             error = null
             dev.idadroid.util.runCatchingSuspending { fileManager.fileForSharing(entry.path) }
                 .onSuccess { file ->
-                    runCatching { RootfsFileSharing.openFile(context, file) }
+                    // 外部共享存储文件（/sdcard 等）以缓存副本交给外部应用：
+                    // 副本无法写回原文件，因此只授予读权限，避免编辑器"保存"到
+                    // 副本后用户误以为修改已生效。
+                    val writable = !fileManager.isExternalGuestPath(entry.path)
+                    runCatching { RootfsFileSharing.openFile(context, file, writable) }
                         .onFailure { error = "打开失败：${it.message}" }
                 }
                 .onFailure { error = "打开失败：${it.message}" }
@@ -432,8 +436,14 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
                 )
             } else {
                 ListItem(
-                    headlineContent = { Text("打开/编辑") },
-                    supportingContent = { Text("通过 Android 内容提供器交给外部应用") },
+                    headlineContent = { Text(if (fileManager.isExternalGuestPath(entry.path)) "打开（只读）" else "打开/编辑") },
+                    supportingContent = {
+                        Text(
+                            if (fileManager.isExternalGuestPath(entry.path))
+                                "外部共享文件以只读副本打开，修改请用“另存为”"
+                            else "通过 Android 内容提供器交给外部应用"
+                        )
+                    },
                     leadingContent = { Icon(Icons.Rounded.Visibility, contentDescription = null) },
                     modifier = Modifier.clickable { actionEntry = null; openFile(entry) }
                 )
