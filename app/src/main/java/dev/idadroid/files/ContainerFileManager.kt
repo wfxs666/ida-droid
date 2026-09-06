@@ -68,6 +68,7 @@ class ContainerFileManager(
     }
 
     suspend fun deleteFile(path: String) = withContext(Dispatchers.IO) {
+        requireReady()
         val file = guestFile(path)
         require(file != paths.rootfsDir.canonicalFile) { "不能删除 rootfs 根目录" }
         if (file.isDirectory) file.deleteRecursively() else file.delete()
@@ -101,7 +102,7 @@ class ContainerFileManager(
 
     fun normalizeGuestPath(path: String): String {
         val raw = path.trim().ifBlank { "/root/pi_workspace" }.replace('\\', '/')
-        val absolute = if (raw.startsWith('/')) raw else "/root/pi_workspace/$raw"
+        val absolute = if (raw.startsWith('/')) raw else "${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/$raw"
         val parts = mutableListOf<String>()
         absolute.split('/').forEach { part ->
             when {

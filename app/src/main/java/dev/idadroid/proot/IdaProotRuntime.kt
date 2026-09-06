@@ -15,6 +15,11 @@ class IdaProotRuntime(
     private val hostTmpDir: File = paths.hostTmpDir
 ) {
     private val appContext = context.applicationContext
+    private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
+
+    /** 用户设置的工作区路径（容器内可见路径） */
+    private val workspacePath: String get() = settings.envSettings.value.workspacePath.ifBlank { DEFAULT_WORKSPACE }
+
 
     data class LaunchSpec(
         val command: List<String>,
@@ -41,10 +46,10 @@ class IdaProotRuntime(
         val timedOut: Boolean = false
     )
 
-    fun buildInteractiveLaunch(term: String = "xterm-256color", cwd: String = DEFAULT_WORKSPACE): TerminalLaunchSpec =
+    fun buildInteractiveLaunch(term: String = "xterm-256color", cwd: String = workspacePath): TerminalLaunchSpec =
         interactiveShellSpec(term = term, cwd = cwd)
 
-    fun interactiveShellSpec(term: String = "xterm-256color", cwd: String = DEFAULT_WORKSPACE): TerminalLaunchSpec {
+    fun interactiveShellSpec(term: String = "xterm-256color", cwd: String = workspacePath): TerminalLaunchSpec {
         val spec = interactiveLaunchSpec(term = term, cwd = cwd)
         return TerminalLaunchSpec(
             executable = spec.command.first(),
@@ -62,7 +67,7 @@ class IdaProotRuntime(
         return LaunchSpec(command, workingDirectory = paths.envDir.apply { mkdirs() }, environment = hostEnvironment())
     }
 
-    fun workspaceCommandSpec(script: String): LaunchSpec = commandSpec(script, cwd = DEFAULT_WORKSPACE)
+    fun workspaceCommandSpec(script: String): LaunchSpec = commandSpec(script, cwd = workspacePath)
 
     suspend fun run(script: String, timeoutMs: Long = 120_000): CommandResult = withContext(Dispatchers.IO) {
         val spec = commandSpec(script)
@@ -85,6 +90,37 @@ class IdaProotRuntime(
         val stderr = runCatching { stderrFuture.get(2, TimeUnit.SECONDS) }.getOrDefault("")
         executor.shutdownNow()
         CommandResult(exitCode, stdout, stderr, timedOut = !finished)
+    }
+
+    /** 便捷方法：执行单条命令，返回 stdout+stderr 合并文本 */
+    suspend fun executeCommandWithTimeout(command: String, timeoutMs: Long = 60_000): String = withContext(Dispatchers.IO) {
+        // 使用 workspaceCommandSpec 确保命令在工作区目录执行
+        val spec = workspaceCommandSpec(command)
+        val processBuilder = ProcessBuilder(spec.command)
+            .directory(spec.workingDirectory)
+        processBuilder.environment().putAll(spec.environment)
+
+        val process = processBuilder.start()
+        val executor = Executors.newFixedThreadPool(2)
+        val stdoutFuture = executor.submit<String> { process.inputStream.bufferedReader().use { it.readText() } }
+        val stderrFuture = executor.submit<String> { process.errorStream.bufferedReader().use { it.readText() } }
+
+        val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+        if (!finished) {
+            process.destroy()
+            if (!process.waitFor(1500, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+        }
+        val exitCode = if (finished) process.exitValue() else -1
+        val stdout = runCatching { stdoutFuture.get(2, TimeUnit.SECONDS) }.getOrDefault("")
+        val stderr = runCatching { stderrFuture.get(2, TimeUnit.SECONDS) }.getOrDefault("")
+        executor.shutdownNow()
+        if (!finished) {
+            "错误: 命令超时 (${timeoutMs / 1000}s)\nstderr: $stderr"
+        } else if (exitCode != 0) {
+            "退出码: $exitCode\nstdout: $stdout\nstderr: $stderr"
+        } else {
+            stdout.ifBlank { stderr.ifBlank { "(无输出)" } }
+        }
     }
 
     fun describe(spec: TerminalLaunchSpec): String = buildString {
@@ -155,7 +191,7 @@ class IdaProotRuntime(
         "USER" to "root",
         "LOGNAME" to "root",
         "SHELL" to resolveGuestShell(),
-        "WORKSPACE" to DEFAULT_WORKSPACE,
+        "WORKSPACE" to workspacePath,
         "LANG" to "C.UTF-8",
         "LC_ALL" to "C.UTF-8",
         "NVM_DIR" to "/root/.nvm",
@@ -166,7 +202,7 @@ class IdaProotRuntime(
         "XDG_DATA_HOME" to "/root/.local/share",
         "XDG_CACHE_HOME" to "/root/.cache",
         "XDG_CONFIG_HOME" to "/root/.config",
-        "PI_CODING_AGENT_DIR" to "$DEFAULT_WORKSPACE/.idadroid/pi-agent",
+        "PI_CODING_AGENT_DIR" to "$workspacePath/.idadroid/pi-agent",
         "PI_SKIP_VERSION_CHECK" to "1",
         "PI_TELEMETRY" to "0"
     )
@@ -208,8 +244,8 @@ class IdaProotRuntime(
 
     private fun wrapScriptWithRuntimeBootstrap(script: String): String = """
         export HOME=/root
-        export WORKSPACE="$DEFAULT_WORKSPACE"
-        export PI_CODING_AGENT_DIR="$DEFAULT_WORKSPACE/.idadroid/pi-agent"
+        export WORKSPACE="$workspacePath"
+        export PI_CODING_AGENT_DIR="$workspacePath/.idadroid/pi-agent"
         export NVM_DIR="${'$'}{NVM_DIR:-/root/.nvm}"
         if [ -s "${'$'}NVM_DIR/nvm.sh" ]; then . "${'$'}NVM_DIR/nvm.sh" >/dev/null 2>&1 || true; fi
         for d in /root/.nvm/versions/node/*/bin /opt/nvm/versions/node/*/bin /root/.npm-global/bin /root/.local/bin /root/bin; do

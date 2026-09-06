@@ -5,6 +5,7 @@ build/
 **/build/
 dist/
 local.properties
+*.jks
 .idea/
 .DS_Store
 

@@ -11,7 +11,7 @@ data class AgentSessionRecord(
     val createdAt: String = "",
     val updatedAt: String = "",
     val lastActiveAt: String? = null,
-    val cwd: String = "/root/pi_workspace",
+    val cwd: String = "",
     val provider: String? = null,
     val model: String? = null,
     val thinkingLevel: String? = null,
@@ -97,6 +97,21 @@ data class PiUserConfig(
     val extraArgs: List<String> = emptyList()
 )
 
+@Serializable
+data class ConfigExport(
+    val defaultProvider: String = "",
+    val defaultModel: String = "",
+    val defaultThinkingLevel: String = "medium",
+    val enabledModels: String = "",
+    val settingsText: String = "{}",
+    val modelsText: String = "{}",
+    val envText: String = "{}",
+    val appendSystem: String = "",
+    val extraArgsText: String = "",
+    val version: Int = 1,
+    val exportedAt: Long = 0L
+)
+
 data class PiConfigSnapshot(
     val defaultProvider: String = "",
     val defaultModel: String = "",
@@ -105,11 +120,9 @@ data class PiConfigSnapshot(
     val settingsText: String = "{}",
     val modelsText: String = "{}",
     val envText: String = "{}",
-    val systemPrompt: String = "",
     val appendSystem: String = "",
-    val agentsMd: String = "",
     val extraArgsText: String = "",
-    val materializedDir: String = "/root/pi_workspace/.idadroid/pi-agent",
+    val materializedDir: String = "",
     val modelCatalog: AgentModelCatalog = AgentModelCatalog()
 )
 
@@ -134,7 +147,19 @@ data class AgentUiState(
     val modelLoading: Boolean = false,
     val activeStats: SessionStats? = null,
     val activeQueue: QueueState = QueueState(),
-    val piConfig: PiConfigSnapshot = PiConfigSnapshot()
+    val piConfig: PiConfigSnapshot = PiConfigSnapshot(),
+    val workspace: WorkspaceState = WorkspaceState(),
+    /** 细粒度处理状态，参考 Operit 的 InputProcessingState 设计。
+     *  - null: 空闲
+     *  - "connecting": 正在连接 Agent 进程 / 发送 prompt
+     *  - "receiving": 已收到首个 delta，正在接收流式响应
+     *  - "executing_tool": 正在执行工具调用
+     *  - "compacting": 正在压缩上下文 */
+    val processingPhase: String? = null,
+    /** prompt 发送时间戳，用于计算等待时长 */
+    val promptSentAt: Long = 0L,
+    /** 首个 delta 到达时间戳 */
+    val firstDeltaAt: Long = 0L
 ) {
     val activeSession: AgentSessionRecord? get() = sessions.firstOrNull { it.id == activeSessionId }
     val activeSessionHasConfiguredModel: Boolean get() = activeSession?.let { !it.provider.isNullOrBlank() && !it.model.isNullOrBlank() } == true
@@ -142,6 +167,10 @@ data class AgentUiState(
     val canUseActiveSession: Boolean get() = agentConfigReady && activeSessionHasConfiguredModel
     val isWorking: Boolean get() = turnActive || status == "working"
     val canSend: Boolean get() = activeSessionId != null && canUseActiveSession && !isWorking && status != "starting"
+    /** 当前正在流式输出的助手消息 ID（用于 UI 渲染闪烁游标）。 */
+    val streamingMessageId: String? get() = if (isWorking) messages.lastOrNull { it.role == "assistant" }?.id else null
+    /** 等待时长（毫秒），从 prompt 发出到首个 delta 到达 */
+    val waitDurationMs: Long get() = if (promptSentAt > 0L && firstDeltaAt > 0L) firstDeltaAt - promptSentAt else 0L
 }
 
 sealed interface ChatAttachment {
@@ -188,10 +217,17 @@ data class ChatMessage(
     val toolStatus: String? = null
 )
 
-sealed interface PiRuntimeEvent {
-    data class RpcEvent(val event: kotlinx.serialization.json.JsonObject) : PiRuntimeEvent
-    data class RawStdout(val line: String) : PiRuntimeEvent
-    data class Stderr(val text: String) : PiRuntimeEvent
-    data class Status(val status: String, val error: String? = null) : PiRuntimeEvent
-    data class Exited(val exitCode: Int?, val error: String? = null) : PiRuntimeEvent
-}
+/** DTO → UI 模型转换 */
+fun ChatHttpClient.ChatMessageDto.toUiMessage(): ChatMessage = ChatMessage(
+    id = java.util.UUID.randomUUID().toString(),
+    role = role,
+    text = content ?: "",
+    timestamp = System.currentTimeMillis(),
+    toolCallId = toolCallId,
+    toolName = name,
+    toolResult = content,
+    toolStatus = if (role == "tool") "done" else null
+)
+
+/** 批量 DTO → UI 转换 */
+fun List<ChatHttpClient.ChatMessageDto>.toUiMessages(): List<ChatMessage> = mapNotNull { it.toUiMessage() }

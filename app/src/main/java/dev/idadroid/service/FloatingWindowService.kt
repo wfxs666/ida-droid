@@ -131,7 +131,7 @@ class FloatingWindowService : Service() {
         paths = EnvironmentPaths.of(this)
         settingsStore = IdaDroidSettings(this)
         vncManager = VncSessionManager(this, settingsStore)
-        mcpManager = IdaMcpSessionManager.get(this)
+        mcpManager = IdaMcpSessionManager.get(this, settingsStore)
         ensureChannel(this)
     }
 
