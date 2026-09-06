@@ -314,7 +314,9 @@ class FileInfoTool : AbstractAgentTool() {
                 append("扩展名: $ext\n")
                 // 用 run_shell 获取 file 命令的输出
                 val fileType = runCatching {
-                    context.proot.executeCommandWithTimeout("file '${context.toGuestPath(file.canonicalPath)}'", 5_000)
+                    // 转义单引号，防止 transfer 文件名里的特殊字符注入 shell（CWE-78）
+                    val fileGuestPath = context.toGuestPath(file.canonicalPath).replace("'", "'\"'\"'")
+                    context.proot.executeCommandWithTimeout("file '$fileGuestPath'", 5_000)
                 }.getOrDefault("未知")
                 append("文件类型: $fileType")
             } else if (file.isDirectory) {

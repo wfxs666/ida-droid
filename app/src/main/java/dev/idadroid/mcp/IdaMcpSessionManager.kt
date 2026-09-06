@@ -359,18 +359,22 @@ class IdaMcpSessionManager private constructor(
         """.trimIndent()
     }
 
-    private fun isTcpOpen(port: Int, bindHost: String? = null): Boolean {
+    /** bindHost → 本地探测主机列表（通配/0.0.0.0 → 127.0.0.1；:: → ::1）。 */
+    private fun probeHosts(bindHost: String?): List<String> {
         // bindHost 默认从当前会话设置取，避免服务绑定到 IPv6 回环(::1)等
         // 非 127.0.0.1 地址时误判为不可达（导致反复重启/销毁）。
         val configured = (bindHost ?: _state.value.settings.bindHost).trim().trim('[', ']')
-        val hosts = when {
+        return when {
             configured.isBlank() || configured == "0.0.0.0" || configured == "*" ->
                 listOf("127.0.0.1")
             configured == "::" -> listOf("::1")
             configured.contains(':') -> listOf(configured) // IPv6 literal
             else -> listOf(configured)
         }
-        return hosts.any { host ->
+    }
+
+    private fun isTcpOpen(port: Int, bindHost: String? = null): Boolean =
+        probeHosts(bindHost).any { host ->
             runCatching {
                 Socket().use { socket ->
                     socket.connect(InetSocketAddress(host, port), 350)
@@ -378,7 +382,6 @@ class IdaMcpSessionManager private constructor(
                 }
             }.getOrDefault(false)
         }
-    }
 
     private suspend fun waitUntilTcpOpen(port: Int, timeoutMs: Long, bindHost: String? = null): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -411,26 +414,23 @@ class IdaMcpSessionManager private constructor(
     }
 
     /** 探测端口上的 HTTP 服务是否应答（任意 2xx/3xx/4xx/5xx 均视为有 HTTP 服务）。 */
-    private fun isMcpHttpResponding(port: Int, bindHost: String): Boolean = runCatching {
-        val host = httpHost(bindHost)
-        val conn = (URL("http://$host:$port/api/transfers").openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 1200
-            readTimeout = 1200
+    private fun isMcpHttpResponding(port: Int, bindHost: String): Boolean =
+        probeHosts(bindHost).any { host ->
+            runCatching {
+                val urlHost = if (host.contains(':')) "[$host]" else host
+                val conn = (URL("http://$urlHost:$port/api/transfers").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 1200
+                    readTimeout = 1200
+                }
+                try {
+                    val code = conn.responseCode
+                    code >= 200 && code < 600
+                } finally {
+                    conn.disconnect()
+                }
+            }.getOrDefault(false)
         }
-        try {
-            val code = conn.responseCode
-            code >= 200 && code < 600
-        } finally {
-            conn.disconnect()
-        }
-    }.getOrDefault(false)
-
-    /** bindHost → URL 主机（IPv6 字面量加方括号）。 */
-    private fun httpHost(bindHost: String): String {
-        val host = bindHost.trim().trim('[', ']')
-        return if (host.contains(':')) "[$host]" else host
-    }
 
     private suspend fun waitUntilPortClosed(port: Int, timeoutMs: Long, bindHost: String? = null): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
